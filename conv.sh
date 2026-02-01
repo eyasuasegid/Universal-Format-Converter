@@ -74,58 +74,43 @@ ascii_to_hex() {
 }
 
 bin_to_ascii() {
-    local bin="$1"
-    # Pad to multiple of 8 ONLY if we're doing ASCII conversion (needs full bytes)
-    local len=${#bin}
-    if [ $((len % 8)) -ne 0 ]; then
-        padding=$((8 - (len % 8)))
-        bin=$(printf "%0${padding}d%s" 0 "$bin")
-    fi
-    # Convert 8-bit chunks
-    for ((i=0; i<${#bin}; i+=8)); do
-        byte="${bin:i:8}"
-        printf "\\x%02x" $((2#$byte)) 2>/dev/null
-    done
+    local hex=$(bin_to_hex "$1")
+    hex_to_ascii "$hex"
 }
 
 # NEW: Optimized ascii_to_bin that removes unnecessary leading zeros
 ascii_to_bin() {
-    echo -n "$1" | while read -n 1 char; do
-        if [ -n "$char" ]; then
-            # Get decimal value
-            dec=$(printf "%d" "'$char")
-            # Convert to binary and remove leading zeros
-            bin=$(echo "obase=2; $dec" | bc 2>/dev/null)
-            # Remove leading zeros but keep at least one digit for zero
-            bin=$(echo "$bin" | sed 's/^0*//')
-            [ -z "$bin" ] && bin="0"
-            echo -n "$bin "
-        fi
-    done | sed 's/ $//'  # Remove trailing space
+    echo -n "$1" | xxd -b -c 256 | sed 's/^.*: //; s/  .*//' | tr -d ' \n'
 }
 
 dec_to_ascii() {
-    for num in $1; do
-        printf "\\x%02x" "$num" 2>/dev/null
-    done
+    local hex=$(dec_to_hex "$1")
+    hex_to_ascii "$hex"
 }
 
 ascii_to_dec() {
-    echo -n "$1" | xxd -p | sed 's/../& /g' | while read hex; do
+    echo -n "$1" | xxd -p | sed 's/../& /g' | tr ' ' '\n' | while read hex; do
         [ -n "$hex" ] && printf "%d " "0x$hex"
     done | sed 's/ $//'
 }
 
 oct_to_ascii() {
-    for num in $1; do
-        printf "\\x%02x" "0$num" 2>/dev/null
-    done
+    local hex=$(for num in $1; do printf "%02x" "0$num"; done)
+    hex_to_ascii "$hex"
 }
 
+# FIXED: Parsing
+# FIXED: helper for oct_to_bin
+# FIXED: Safe implementations using hex intermediate
 ascii_to_oct() {
-    echo -n "$1" | xxd -p | sed 's/../& /g' | while read hex; do
-        [ -n "$hex" ] && printf "%03o " "0x$hex"
+    for hex in $(echo -n "$1" | xxd -p | sed 's/../& /g'); do
+        printf "%03o " "0x$hex"
     done | sed 's/ $//'
+}
+
+oct_to_bin() {
+    local hex=$(for num in $1; do printf "%02x" "0$num"; done)
+    hex_to_bin "$hex"
 }
 
 # FIXED: bin_to_hex with dynamic padding
@@ -149,21 +134,12 @@ bin_to_hex() {
 # FIXED: hex_to_bin - remove leading zeros
 hex_to_bin() {
     local hex="$1"
+    # Ensure even length
     if [ $(( ${#hex} % 2 )) -eq 1 ]; then
         hex="0$hex"
     fi
-    
-    # Convert each hex digit
-    for ((i=0; i<${#hex}; i+=2)); do
-        byte_hex="${hex:i:2}"
-        # Convert hex to decimal
-        dec=$((16#${byte_hex}))
-        # Convert decimal to binary and remove leading zeros
-        bin=$(echo "obase=2; $dec" | bc 2>/dev/null)
-        bin=$(echo "$bin" | sed 's/^0*//')
-        [ -z "$bin" ] && bin="0"
-        echo -n "$bin "
-    done | sed 's/ $//'
+    # Efficiently convert to binary stream using xxd (strip offsets and ASCII dump)
+    echo -n "$hex" | xxd -r -p 2>/dev/null | xxd -b -c 256 | sed 's/^.*: //; s/  .*//' | tr -d ' \n'
 }
 
 dec_to_hex() {
@@ -184,14 +160,8 @@ hex_to_dec() {
 
 # FIXED: dec_to_bin - remove leading zeros
 dec_to_bin() {
-    for num in $1; do
-        # Convert to binary
-        bin=$(echo "obase=2; $num" | bc 2>/dev/null || echo "0")
-        # Remove leading zeros
-        bin=$(echo "$bin" | sed 's/^0*//')
-        [ -z "$bin" ] && bin="0"
-        printf "%s " "$bin"
-    done | sed 's/ $//'
+    local hex=$(dec_to_hex "$1")
+    hex_to_bin "$hex"
 }
 
 # FIXED: bin_to_dec with dynamic padding
@@ -212,18 +182,7 @@ bin_to_dec() {
     done | sed 's/ $//'
 }
 
-# FIXED: oct_to_bin - remove leading zeros
-oct_to_bin() {
-    for num in $1; do
-        # Convert octal to decimal
-        dec=$((8#${num}))
-        # Convert decimal to binary and remove leading zeros
-        bin=$(echo "obase=2; $dec" | bc 2>/dev/null)
-        bin=$(echo "$bin" | sed 's/^0*//')
-        [ -z "$bin" ] && bin="0"
-        printf "%s " "$bin"
-    done | sed 's/ $//'
-}
+
 
 # Main conversion router
 convert() {
@@ -246,7 +205,7 @@ convert() {
         # ASCII Conversions
         ascii.ascii) echo "$input" ;;
         ascii.hex) ascii_to_hex "$input" ;;
-        ascii.bin) ascii_to_bin "$input" ;;  # Now uses optimized version
+        ascii.bin) ascii_to_bin "$input" ;;
         ascii.dec) ascii_to_dec "$input" ;;
         ascii.oct) ascii_to_oct "$input" ;;
         ascii.base64) echo -n "$input" | base64 ;;
@@ -256,84 +215,73 @@ convert() {
         # Hex Conversions
         hex.ascii) hex_to_ascii "$cleaned" ;;
         hex.hex) echo "$cleaned" ;;
-        hex.bin) hex_to_bin "$cleaned" ;;  # Now uses optimized version
+        hex.bin) hex_to_bin "$cleaned" ;;
         hex.dec) hex_to_dec "$cleaned" ;;
         hex.oct) 
-            hex_to_dec "$cleaned" | while read num; do
-                printf "%03o " "$num"
-            done | sed 's/ $//'
+            vals=$(hex_to_dec "$cleaned")
+            for num in $vals; do printf "%03o " "$num"; done | sed 's/ $//' 
             ;;
-        hex.base64) 
-            hex_to_ascii "$cleaned" | base64
-            ;;
-        hex.url) 
-            hex_to_ascii "$cleaned" | xxd -p | sed 's/../%&/g'
-            ;;
+        hex.base64) hex_to_ascii "$cleaned" | base64 ;;
+        hex.url) hex_to_ascii "$cleaned" | xxd -p | sed 's/../%&/g' ;;
         
         # Binary Conversions
         bin.ascii) bin_to_ascii "$cleaned" ;;
         bin.hex) bin_to_hex "$cleaned" ;;
         bin.bin) echo "$cleaned" ;;
         bin.dec) bin_to_dec "$cleaned" ;;
-        bin.oct)
-            bin_to_dec "$cleaned" | while read num; do
-                printf "%03o " "$num"
-            done | sed 's/ $//'
+        bin.oct) 
+            vals=$(bin_to_dec "$cleaned")
+            for num in $vals; do printf "%03o " "$num"; done | sed 's/ $//' 
             ;;
-        bin.base64) 
-            bin_to_ascii "$cleaned" | base64
-            ;;
+        bin.base64) bin_to_ascii "$cleaned" | base64 ;;
+        bin.url) bin_to_ascii "$cleaned" | xxd -p | sed 's/../%&/g' ;;
         
         # Decimal Conversions
         dec.ascii) dec_to_ascii "$cleaned" ;;
         dec.hex) dec_to_hex "$cleaned" ;;
-        dec.bin) dec_to_bin "$cleaned" ;;  # Now uses optimized version
+        dec.bin) dec_to_bin "$cleaned" ;;
         dec.dec) echo "$cleaned" ;;
-        dec.oct)
-            for num in $cleaned; do
-                printf "%03o " "$num"
-            done | sed 's/ $//'
-            ;;
-        dec.base64)
-            dec_to_ascii "$cleaned" | base64
-            ;;
+        dec.oct) for num in $cleaned; do printf "%03o " "$num"; done | sed 's/ $//' ;;
+        dec.base64) dec_to_ascii "$cleaned" | base64 ;;
+        dec.url) dec_to_ascii "$cleaned" | xxd -p | sed 's/../%&/g' ;;
         
         # Octal Conversions
         oct.ascii) oct_to_ascii "$cleaned" ;;
-        oct.hex)
-            for num in $cleaned; do
-                printf "%02x" "0$num"
-            done
-            ;;
-        oct.bin) oct_to_bin "$cleaned" ;;  # Now uses optimized version
-        oct.dec)
-            for num in $cleaned; do
-                printf "%d " "0$num"
-            done | sed 's/ $//'
-            ;;
+        oct.hex) for num in $cleaned; do printf "%02x" "0$num"; done ;;
+        oct.bin) oct_to_bin "$cleaned" ;;
+        oct.dec) for num in $cleaned; do printf "%d " "0$num"; done | sed 's/ $//' ;;
         oct.oct) echo "$cleaned" ;;
+        oct.base64) oct_to_ascii "$cleaned" | base64 ;;
+        oct.url) oct_to_ascii "$cleaned" | xxd -p | sed 's/../%&/g' ;;
         
         # Base64 Conversions
         base64.ascii) echo "$cleaned" | base64 -d 2>/dev/null ;;
         base64.hex) echo "$cleaned" | base64 -d 2>/dev/null | xxd -p ;;
-        base64.bin) 
-            ascii=$(echo "$cleaned" | base64 -d 2>/dev/null)
-            ascii_to_bin "$ascii"
-            ;;
+        base64.bin) echo "$cleaned" | base64 -d 2>/dev/null | xxd -b -c 256 | sed 's/^.*: //; s/  .*//' | tr -d ' \n' ;;
         base64.dec) 
-            echo "$cleaned" | base64 -d 2>/dev/null | xxd -p | sed 's/../& /g' | while read hex; do 
-                [ -n "$hex" ] && printf "%d " "0x$hex"
-            done | sed 's/ $//' 
+            hexs=$(echo "$cleaned" | base64 -d 2>/dev/null | xxd -p | sed 's/../& /g')
+            for hex in $hexs; do printf "%d " "0x$hex"; done | sed 's/ $//' 
             ;;
+        base64.oct) 
+            hexs=$(echo "$cleaned" | base64 -d 2>/dev/null | xxd -p | sed 's/../& /g')
+            for hex in $hexs; do printf "%03o " "0x$hex"; done | sed 's/ $//' 
+            ;;
+        base64.url) echo "$cleaned" | base64 -d 2>/dev/null | xxd -p | sed 's/../%&/g' ;;
         base64.base64) echo "$cleaned" ;;
         
         # URL Conversions
         url.ascii) printf "%b" "$cleaned" ;;
         url.hex) printf "%b" "$cleaned" | xxd -p ;;
-        url.bin)
-            ascii=$(printf "%b" "$cleaned")
-            ascii_to_bin "$ascii"
+        url.bin) printf "%b" "$cleaned" | xxd -b -c 256 | sed 's/^.*: //; s/  .*//' | tr -d ' \n' ;;
+        url.dec) 
+            hexs=$(printf "%b" "$cleaned" | xxd -p | sed 's/../& /g')
+            for hex in $hexs; do printf "%d " "0x$hex"; done | sed 's/ $//' 
             ;;
+        url.oct) 
+            hexs=$(printf "%b" "$cleaned" | xxd -p | sed 's/../& /g')
+            for hex in $hexs; do printf "%03o " "0x$hex"; done | sed 's/ $//' 
+            ;;
+        url.base64) printf "%b" "$cleaned" | base64 ;;
         url.url) echo "$input" ;;
         
         # ROT13
@@ -372,10 +320,7 @@ show_help() {
     echo "  $0 picoCTF ascii bin"
     echo "  $0 0x70 hex ascii"
     echo ""
-    echo -e "${YELLOW}Note: Binary output shows minimal representation (no unnecessary leading zeros)${NC}"
-    echo "  Example: 42 (decimal) → 101010 (not 00101010)"
-    echo "  Example: 1 (decimal) → 1 (not 00000001)"
-    echo ""
+
 }
 
 # Main
@@ -385,23 +330,32 @@ if [ $# -eq 0 ]; then
 fi
 
 # Auto-detect format if only input given
+
 if [ $# -eq 1 ]; then
     echo -e "${YELLOW}Auto-detecting format...${NC}"
     input="$1"
     
-    # Simple detection
-    if [[ "$input" =~ ^[0-9a-fA-F]+$ ]]; then
-        convert "$input" hex ascii
+    # URL encoded (distinctive %)
+    if [[ "$input" =~ %[0-9a-fA-F][0-9a-fA-F] ]]; then
+        convert "$input" url ascii
+        
+    # Binary (0 and 1 only)
     elif [[ "$input" =~ ^[01\ ]+$ ]]; then
         convert "$input" bin ascii
+        
+    # Decimal (0-9 only)
     elif [[ "$input" =~ ^[0-9\ ]+$ ]]; then
         convert "$input" dec ascii
-    elif [[ "$input" =~ ^[0-7\ ]+$ ]]; then
-        convert "$input" oct ascii
+        
+    # Hex (0-9, a-f) - Checked AFTER binary/decimal to avoid greedy matches on '10', '100'
+    elif [[ "$input" =~ ^[0-9a-fA-F\ ]+$ ]] || [[ "$input" =~ ^0x[0-9a-fA-F]+$ ]]; then
+        convert "$input" hex ascii
+        
+    # Base64
     elif [[ "$input" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
         convert "$input" base64 ascii
-    elif [[ "$input" =~ %[0-9a-fA-F][0-9a-fA-F] ]]; then
-        convert "$input" url ascii
+        
+    # Fallback
     else
         echo -e "${YELLOW}Assuming ASCII text. Conversions:${NC}"
         echo "  hex:    $(convert "$input" ascii hex 2>/dev/null)"
@@ -422,4 +376,4 @@ fi
 
 echo -e "${RED}Error: Invalid number of arguments${NC}"
 show_help
-exit 1
+exit 1a
