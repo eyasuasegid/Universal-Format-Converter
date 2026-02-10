@@ -40,13 +40,18 @@ normalize_format() {
         base64|b64) echo "base64" ;;
         url|percent) echo "url" ;;
         unicode|uni|u) echo "unicode" ;;
+        unipoint|up) echo "unipoint" ;;
         rot) echo "rot" ;;
         rot13) echo "rot13" ;;
         rot[0-9]|rot1[0-9]|rot2[0-5]) echo "$1" ;;
         decoder|decode) echo "decoder" ;;
         utf8|utf-8) echo "utf8" ;;
-        utf16|utf-16) echo "utf16" ;;
-        utf32|utf-32) echo "utf32" ;;
+        utf16be) echo "utf16be" ;;
+        utf16le) echo "utf16le" ;;
+        utf16|utf-16) echo "utf16be" ;;
+        utf32be) echo "utf32be" ;;
+        utf32le) echo "utf32le" ;;
+        utf32|utf-32) echo "utf32be" ;;
         all) echo "all" ;;
         al) echo "al" ;;
         # Hashes
@@ -64,7 +69,7 @@ normalize_format() {
 get_section_id() {
     local fmt=$(normalize_format "$1")
     case "$fmt" in
-        hex|bin|dec|oct|ascii|unicode|utf8|utf16|utf32) echo 1 ;;
+        hex|bin|dec|oct|ascii|unicode|utf8|utf16be|utf16le|utf32be|utf32le) echo 1 ;;
         base64|base32|rot*|url|decoder) echo 2 ;;
         md5|sha1|sha256|sha384|sha512|crc32) echo 3 ;;
         *) echo 1 ;; # Default to Section 1
@@ -101,6 +106,7 @@ print_section_1() {
     
     # Decode first (Interpreted Meaning)
     { dec_res=$(perform_conversion "$input" "$from" "decoder"); } 2>/dev/null
+    
     if [ -n "$dec_res" ] && [ "$from" != "ascii" ]; then
         printf "${PURPLE}│${NC}  ${YELLOW}[DECODE]${NC}      : ${BOLD}${GREEN}%s${NC}\n" "$dec_res"
         echo -e "${PURPLE}│${NC}"
@@ -114,11 +120,11 @@ print_section_1() {
         if [ -n "$res" ]; then printf "${PURPLE}│${NC}  ${CYAN}▸ %-15s${NC} : ${GREEN}%s${NC}\n" "$label" "$res"; fi
     done
     echo -e "${PURPLE}│${NC}"
-
     printf "${PURPLE}│${NC}  ${YELLOW}[Unicode & Text]${NC}\n"
     { ascii_val=$(perform_conversion "$input" "$from" "ascii"); } 2>/dev/null
     printf "${PURPLE}│${NC}  ${CYAN}▸ %-15s${NC} : ${GREEN}%s${NC}\n" "ascii/plain" "$ascii_val"
-    for fmt in unicode utf8 utf16 utf32; do
+
+    for fmt in unicode unipoint utf8 utf16be utf16le utf32be utf32le; do
          if [ "$fmt" == "$from" ]; then label="$fmt (Source)"; else label="$fmt (Encoded)"; fi
          { res=$(perform_conversion "$input" "$from" "$fmt"); } 2>/dev/null
          if [ -n "$res" ]; then printf "${PURPLE}│${NC}  ${CYAN}▸ %-15s${NC} : ${GREEN}%s${NC}\n" "$label" "$res"; fi
@@ -132,6 +138,7 @@ print_section_2() {
     echo -e "${BOLD}${PURPLE}┌── SECTION 2: Encode & Decode (Transfers)${NC}"
     # Decode first
     { dec_res=$(perform_conversion "$input" "$from" "decoder"); } 2>/dev/null
+    
     if [ -n "$dec_res" ]; then
         printf "${PURPLE}│${NC}  ${YELLOW}[DECODE]${NC}      : ${BOLD}${GREEN}%s${NC}\n" "$dec_res"
         echo -e "${PURPLE}│${NC}"
@@ -202,10 +209,10 @@ clean_input() {
     
     case "$format" in
         hex)
-            echo "$input" | tr -d ' \n\r' | sed 's/0x//g; s/[^0-9a-fA-F]//g' | tr '[:upper:]' '[:lower:]'
+            echo "$input" | sed 's/0x//g; s/,/ /g' | tr -cd '0-9a-fA-F ' | sed 's/  */ /g' | tr '[:upper:]' '[:lower:]'
             ;;
         bin)
-            echo "$input" | tr -cd '01' | sed 's/ //g'
+            echo "$input" | tr -cd '01 ' | sed 's/  */ /g'
             ;;
         dec)
             echo "$input" | tr -cd '0-9 ' | sed 's/  */ /g'
@@ -235,69 +242,31 @@ clean_input() {
     esac
 }
 
-# Conversion functions
-hex_to_ascii() {
-    local hex="$1"
-    if [ $(( ${#hex} % 2 )) -eq 1 ]; then
-        hex="0$hex"
-    fi
-    echo -n "$hex" | xxd -r -p 2>/dev/null || python3 -c "
-import sys, binascii
-try:
-    print(binascii.unhexlify(sys.argv[1]).decode(), end='')
-except:
-    print('', end='')
-" "$hex"
-}
+# --- MATHEMATICAL CONVERSION SUITE (Token-Aware Unicode) ---
 
+# ASCII <=> HEX (Hex as concatenated string of code-points)
 ascii_to_hex() {
-    if [ -n "$1" ]; then echo -n "$1"; else cat; fi | xxd -p | tr -d '\n'
+    if [ -n "$1" ]; then echo -n "$1"; else cat; fi | python3 -c "
+import sys
+try:
+    data = sys.stdin.read()
+    print(''.join([f'{ord(c):x}' for c in data]), end='')
+except: pass
+"
 }
 
-bin_to_ascii() {
-    local hex=$(bin_to_hex "$1")
-    hex_to_ascii "$hex"
+hex_to_ascii() {
+    python3 -c "
+import sys
+try:
+    tokens = sys.stdin.read().split()
+    print(''.join([chr(int(x, 16)) for x in tokens]), end='')
+except: pass
+" <<< "$1"
 }
 
-# NEW: Optimized ascii_to_bin that removes unnecessary leading zeros
-ascii_to_bin() {
-    if [ -n "$1" ]; then echo -n "$1"; else cat; fi | xxd -b -c 256 | sed 's/^.*: //; s/  .*//' | tr -d ' \n'
-}
-
-dec_to_ascii() {
-    local hex=$(dec_to_hex "$1")
-    hex_to_ascii "$hex"
-}
-
-ascii_to_dec() {
-    if [ -n "$1" ]; then echo -n "$1"; else cat; fi | xxd -p | sed 's/../& /g' | tr ' ' '\n' | while read hex; do
-        [ -n "$hex" ] && printf "%d " "0x$hex"
-    done | sed 's/ $//'
-}
-
-oct_to_ascii() {
-    local hex=$(for num in $1; do printf "%02x" "0$num"; done)
-    hex_to_ascii "$hex"
-}
-
-# FIXED: Parsing
-# FIXED: helper for oct_to_bin
-# FIXED: Safe implementations using hex intermediate
-ascii_to_oct() {
-    local stream
-    if [ -n "$1" ]; then stream=$(echo -n "$1"); else stream=$(cat); fi
-    for hex in $(echo -n "$stream" | xxd -p | sed 's/../& /g'); do
-        printf "%03o " "0x$hex"
-    done | sed 's/ $//'
-}
-
-oct_to_bin() {
-    python3 -c "import sys; print(bin(int(sys.argv[1], 8))[2:], end='')" "${1// /}" 2>/dev/null
-}
-
-# NEW: Unicode Helpers
+# UNICODE HELPERS
 ascii_to_unicode() {
-    # If explicit arg, echo it. Else assume stdin.
     if [ -n "$1" ]; then echo -n "$1"; else cat; fi | python3 -c "
 import sys
 chars = sys.stdin.read()
@@ -306,27 +275,29 @@ print(' '.join([f'U+{ord(c):04X}' for c in chars]), end='')
 }
 
 unicode_to_ascii() {
-    # Expects space separated hex string (e.g., 0041 0042)
     if [ -n "$1" ]; then echo -n "$1"; else cat; fi | python3 -c "
 import sys
 try:
     code_points = sys.stdin.read().split()
-    print(''.join([chr(int(cp, 16)) for cp in code_points]), end='')
+    print(''.join([chr(int(cp.replace('U+',''), 16)) for cp in code_points]), end='')
 except: pass
 "
 }
 
-# NEW: Generic Python Encoding Helper (Text <-> Hex)
+unipoint_to_ascii() { dec_to_ascii "$1"; }
+ascii_to_unipoint() { ascii_to_dec "$1"; }
+
+# NEW: Generic Python Encoding Utils
 text_to_encoded_hex() {
     local codec="$1"
-    # Read raw bytes from stdin, treat as Latin-1 (1:1 byte mapping) to get string, then encode
     python3 -c "
 import sys
 try:
     data = sys.stdin.buffer.read()
-    # Decode input bytes to string using latin-1 (safest 1:1 mapping)
-    text = data.decode('latin-1')
-    # Encode to target codec and print hex
+    try:
+        text = data.decode('utf-8')
+    except UnicodeDecodeError:
+        text = data.decode('latin-1')
     print(text.encode('$codec').hex(), end='')
 except Exception as e:
     print(f'Error: {str(e)}')
@@ -339,89 +310,91 @@ encoded_hex_to_text() {
     echo -n "$hex" | python3 -c "import sys; print(bytes.fromhex(sys.stdin.read().strip()).decode('$codec', errors='ignore'), end='')"
 }
 
-# FIXED: bin_to_hex with dynamic padding
-bin_to_hex() {
-    local bin="$1"
-    # Remove spaces
-    bin=$(echo "$bin" | tr -d ' ')
-    # Calculate how many bits we need to pad to make complete bytes
-    local len=${#bin}
-    if [ $((len % 8)) -ne 0 ]; then
-        padding=$((8 - (len % 8)))
-        bin=$(printf "%0${padding}d%s" 0 "$bin")
-    fi
-    # Convert each byte (8 bits) to hex
-    for ((i=0; i<${#bin}; i+=8)); do
-        byte="${bin:i:8}"
-        printf "%02x" $((2#$byte))
-    done
+# ASCII <=> BIN (Bin as concatenated string of code-points)
+ascii_to_bin() {
+    if [ -n "$1" ]; then echo -n "$1"; else cat; fi | python3 -c "
+import sys
+try:
+    data = sys.stdin.read()
+    print(''.join([bin(ord(c))[2:].zfill(8 if ord(c) < 256 else 16) for c in data]), end='')
+except: pass
+"
 }
 
-# FIXED: hex_to_bin - remove leading zeros
-hex_to_bin() {
-    local hex="$1"
-    # Ensure even length
-    if [ $(( ${#hex} % 2 )) -eq 1 ]; then
-        hex="0$hex"
-    fi
-    # Efficiently convert to binary stream using xxd (strip offsets and ASCII dump)
-    echo -n "$hex" | xxd -r -p 2>/dev/null | xxd -b -c 256 | sed 's/^.*: //; s/  .*//' | tr -d ' \n'
+bin_to_ascii() {
+    python3 -c "
+import sys
+try:
+    tokens = sys.stdin.read().split()
+    print(''.join([chr(int(x, 2)) for x in tokens]), end='')
+except: pass
+" <<< "$1"
 }
 
-dec_to_hex() {
-    local input="$1"
-    if [[ "$input" =~ " " ]]; then
-        for num in $input; do
-            printf "%02x" "$num"
-        done
-    else
-        python3 -c "import sys; print(hex(int(sys.argv[1]))[2:], end='')" "$input" 2>/dev/null
-    fi
+# ASCII <=> DEC (Dec as space-separated code-points)
+ascii_to_dec() {
+    if [ -n "$1" ]; then echo -n "$1"; else cat; fi | python3 -c "
+import sys
+try:
+    data = sys.stdin.read()
+    print(' '.join([str(ord(c)) for c in data]), end='')
+except: pass
+"
 }
 
+dec_to_ascii() {
+    python3 -c "
+import sys
+try:
+    tokens = sys.stdin.read().split()
+    print(''.join([chr(int(x)) for x in tokens]), end='')
+except: pass
+" <<< "$1"
+}
+
+# ASCII <=> OCT (Oct as space-separated code-points)
+ascii_to_oct() {
+    if [ -n "$1" ]; then echo -n "$1"; else cat; fi | python3 -c "
+import sys
+try:
+    data = sys.stdin.read()
+    print(' '.join([oct(ord(c))[2:] for c in data]), end='')
+except: pass
+"
+}
+
+oct_to_ascii() {
+    python3 -c "import sys; print(''.join([chr(int(x, 8)) for x in sys.argv[1].split()]), end='')" "$1" 2>/dev/null
+}
+
+# CROSS-NUMERICAL (Always token-aware via Decimal intermediate)
 hex_to_dec() {
-    python3 -c "import sys; print(int(sys.argv[1].replace(' ', ''), 16), end='')" "$1" 2>/dev/null
-}
-
-byte_hex_to_dec() {
-    local hex="$1"
-    [ $(( ${#hex} % 2 )) -eq 1 ] && hex="0$hex"
-    for ((i=0; i<${#hex}; i+=2)); do
-        printf "%d " "0x${hex:i:2}"
-    done | sed 's/ $//'
-}
-
-byte_hex_to_oct() {
-    local hex="$1"
-    [ $(( ${#hex} % 2 )) -eq 1 ] && hex="0$hex"
-    for ((i=0; i<${#hex}; i+=2)); do
-        printf "%03o " "0x${hex:i:2}"
-    done | sed 's/ $//'
-}
-
-byte_hex_to_bin() {
-    local hex="$1"
-    [ $(( ${#hex} % 2 )) -eq 1 ] && hex="0$hex"
-    for ((i=0; i<${#hex}; i+=2)); do
-        # 8-bit padded bin for clear per-byte view
-        printf "%08d " $(python3 -c "print(bin(int('${hex:i:2}', 16))[2:])")
-    done | sed 's/ $//'
+    python3 -c "import sys; print(' '.join([str(int(t, 16)) for t in sys.stdin.read().split()]), end='')" <<< "$1"
 }
 
 bin_to_dec() {
-    python3 -c "import sys; print(int(sys.argv[1].replace(' ', ''), 2), end='')" "$1" 2>/dev/null
+    python3 -c "import sys; print(' '.join([str(int(t, 2)) for t in sys.stdin.read().split()]), end='')" <<< "$1"
+}
+
+oct_to_dec() {
+    python3 -c "import sys; print(' '.join([str(int(t, 8)) for t in sys.stdin.read().split()]), end='')" <<< "$1"
+}
+
+dec_to_hex() {
+    python3 -c "import sys; print(''.join([f'{int(t):x}' for t in sys.stdin.read().split()]), end='')" <<< "$1" 2>/dev/null
 }
 
 dec_to_bin() {
-    local input="$1"
-    if [[ "$input" =~ " " ]]; then
-        for num in $input; do
-            printf "%08d" $(python3 -c "print(bin(int($num))[2:])")
-        done
-    else
-        python3 -c "import sys; print(bin(int(sys.argv[1]))[2:], end='')" "$1" 2>/dev/null
-    fi
+    python3 -c "import sys; print(''.join([bin(int(t))[2:].zfill(8 if int(t) < 256 else 16) for t in sys.stdin.read().split()]), end='')" <<< "$1" 2>/dev/null
 }
+
+dec_to_oct() {
+    python3 -c "import sys; print(' '.join([oct(int(t))[2:] for t in sys.stdin.read().split()]), end='')" <<< "$1" 2>/dev/null
+}
+
+# UTILS
+hex_to_bin() { local d=$(hex_to_dec "$1"); dec_to_bin "$d"; }
+bin_to_hex() { local d=$(bin_to_dec "$1"); dec_to_hex "$d"; }
 
 
 
@@ -457,215 +430,95 @@ perform_conversion() {
     local input="$1"
     local from="$2"
     local to="$3"
-    
-    # Pre-clean input
     local cleaned=$(clean_input "$input" "$from")
     
     case "$from.$to" in
-        # ASCII Conversions
-        ascii.ascii) echo "$input" ;;
+        # Self-normalization
+        hex.hex|bin.bin|dec.dec|oct.oct|ascii.ascii|unipoint.unipoint|unicode.unicode) echo "$cleaned" ;;
+        
+        # Mathematical suite redirects (Token-Aware)
         ascii.hex) ascii_to_hex "$input" ;;
         ascii.bin) ascii_to_bin "$input" ;;
         ascii.dec) ascii_to_dec "$input" ;;
         ascii.oct) ascii_to_oct "$input" ;;
-        ascii.base32) echo -n "$input" | base32 ;;
-        ascii.base64) echo -n "$input" | base64 ;;
         ascii.unicode) ascii_to_unicode "$input" ;;
-        ascii.url) echo -n "$input" | xxd -p | sed 's/../%&/g' ;;
-        ascii.rot13) echo "$input" | tr 'A-Za-z' 'N-ZA-Mn-za-m' ;;
-        
-        # UTF Encoders (ASCII -> Hex Rep)
-        ascii.utf8) echo -n "$input" | text_to_encoded_hex "utf-8" ;;
-        ascii.utf16) echo -n "$input" | text_to_encoded_hex "utf-16" ;;
-        ascii.utf32) echo -n "$input" | text_to_encoded_hex "utf-32" ;;
+        ascii.unipoint) ascii_to_dec "$input" ;;
+        ascii.base64) echo -n "$input" | base64 | tr -d '\n' ;;
+        ascii.base32) echo -n "$input" | base32 | tr -d '\n' ;;
+        ascii.url) python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read()), end='')" <<< "$input" ;;
+        ascii.rot13) perform_rot "$input" 13 ;;
 
-        # UTF Decoders (Hex Rep -> ASCII)
-        utf8.ascii) encoded_hex_to_text "utf-8" "$cleaned" ;;
-        utf16.ascii) encoded_hex_to_text "utf-16" "$cleaned" ;;
-        utf32.ascii) encoded_hex_to_text "utf-32" "$cleaned" ;;
-        
-        # Hex Conversions
         hex.ascii) hex_to_ascii "$cleaned" ;;
-        hex.hex) echo "$cleaned" ;;
-        hex.bin) python3 -c "import sys; print(bin(int(sys.argv[1], 16))[2:], end='')" "$cleaned" 2>/dev/null ;;
         hex.dec) hex_to_dec "$cleaned" ;;
-        hex.oct) python3 -c "import sys; print(oct(int(sys.argv[1], 16))[2:], end='')" "$cleaned" 2>/dev/null ;;
-        hex.base32) hex_to_ascii "$cleaned" | base32 ;;
-        hex.base64) hex_to_ascii "$cleaned" | base64 ;;
-        hex.unicode) hex_to_ascii "$cleaned" | ascii_to_unicode ;;
-        hex.url) echo "$cleaned" | sed 's/../%&/g' ;;
+        hex.bin) hex_to_bin "$cleaned" ;;
+        hex.oct) local d=$(hex_to_dec "$cleaned"); dec_to_oct "$d" ;;
         
-        # UTF Encoders (from Hex)
-        hex.utf8) hex_to_ascii "$cleaned" | text_to_encoded_hex "utf-8" ;;
-        hex.utf16) hex_to_ascii "$cleaned" | text_to_encoded_hex "utf-16" ;;
-        hex.utf32) hex_to_ascii "$cleaned" | text_to_encoded_hex "utf-32" ;;
-        
-        # ROT13 (from Hex)
-        hex.rot13) hex_to_ascii "$cleaned" | tr 'A-Za-z' 'N-ZA-Mn-za-m' ;;
-        
-        # Binary Conversions
         bin.ascii) bin_to_ascii "$cleaned" ;;
-        bin.hex) python3 -c "import sys; print(hex(int(sys.argv[1], 2))[2:], end='')" "${cleaned// /}" 2>/dev/null ;;
-        bin.bin) echo "$cleaned" ;;
         bin.dec) bin_to_dec "$cleaned" ;;
-        bin.oct) python3 -c "import sys; print(oct(int(sys.argv[1], 2))[2:], end='')" "${cleaned// /}" 2>/dev/null ;;
-        bin.base32) bin_to_ascii "$cleaned" | base32 ;;
-        bin.base64) bin_to_ascii "$cleaned" | base64 ;;
-        bin.unicode) bin_to_ascii "$cleaned" | ascii_to_unicode ;;
-        bin.url) bin_to_hex "$cleaned" | sed 's/../%&/g' ;;
+        bin.hex) bin_to_hex "$cleaned" ;;
+        bin.oct) local d=$(bin_to_dec "$cleaned"); dec_to_oct "$d" ;;
         
-        # Decimal Conversions
         dec.ascii) dec_to_ascii "$cleaned" ;;
         dec.hex) dec_to_hex "$cleaned" ;;
         dec.bin) dec_to_bin "$cleaned" ;;
-        dec.dec) echo "$cleaned" ;;
-        dec.oct) 
-            if [[ "$cleaned" =~ " " ]]; then
-                for num in $cleaned; do printf "%03o " "$num"; done | sed 's/ $//'
-            else
-                python3 -c "import sys; print(oct(int(sys.argv[1]))[2:], end='')" "$cleaned" 2>/dev/null
-            fi
-            ;;
-        dec.base32) dec_to_ascii "$cleaned" | base32 ;;
-        dec.base64) dec_to_ascii "$cleaned" | base64 ;;
-        dec.unicode) dec_to_ascii "$cleaned" | ascii_to_unicode ;;
-        dec.url) for num in $cleaned; do printf "%%%02x" "$num"; done ;;
-        
-        # Octal Conversions
-        oct.ascii) oct_to_ascii "$cleaned" ;;
-        oct.hex) python3 -c "import sys; print(hex(int(sys.argv[1], 8))[2:], end='')" "${cleaned// /}" 2>/dev/null ;;
-        oct.bin) oct_to_bin "$cleaned" ;;
-        oct.dec) python3 -c "import sys; print(int(sys.argv[1], 8), end='')" "${cleaned// /}" 2>/dev/null ;;
-        oct.oct) echo "$cleaned" ;;
-        oct.base32) oct_to_ascii "$cleaned" | base32 ;;
-        oct.base64) oct_to_ascii "$cleaned" | base64 ;;
-        oct.unicode) oct_to_ascii "$cleaned" | ascii_to_unicode ;;
-        oct.url) for num in $cleaned; do printf "%%%02x" "0$num"; done ;;
-        
-        # Base32 Conversions
-        base32.ascii) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); print(base64.b32decode(b + '=' * (8 - len(b) % 8), casefold=True).decode(errors='ignore'), end='')" 2>/dev/null ;;
-        base32.hex) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); print(base64.b32decode(b + '=' * (8 - len(b) % 8), casefold=True).hex(), end='')" 2>/dev/null ;;
-        base32.bin) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); d = base64.b32decode(b + '=' * (8 - len(b) % 8), casefold=True); print(''.join(format(x, '08b') for x in d), end='')" 2>/dev/null ;;
-        base32.dec) 
-            echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); d = base64.b32decode(b + '=' * (8 - len(b) % 8), casefold=True); print(' '.join(str(x) for x in d), end='')" 2>/dev/null
-            ;;
-        base32.oct) 
-            echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); d = base64.b32decode(b + '=' * (8 - len(b) % 8), casefold=True); print(' '.join(format(x, '03o') for x in d), end='')" 2>/dev/null
-            ;;
-        base32.base64) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); d = base64.b32decode(b + '=' * (8 - len(b) % 8), casefold=True); print(base64.b64encode(d).decode(), end='')" 2>/dev/null ;;
-        base32.unicode) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); d = base64.b32decode(b + '=' * (8 - len(b) % 8), casefold=True); print(' '.join([f'U+{x:04X}' for x in d]), end='')" 2>/dev/null ;;
-        base32.url) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); d = base64.b32decode(b + '=' * (8 - len(b) % 8), casefold=True); print(''.join(['%' + format(x, '02x') for x in d]), end='')" 2>/dev/null ;;
-        base32.base32) echo -n "$input" | python3 -c "import sys, base64; print(base64.b32encode(sys.stdin.read().strip().encode()).decode(), end='')" 2>/dev/null ;;
+        dec.oct) dec_to_oct "$cleaned" ;;
+        dec.unipoint) echo "$cleaned" ;;
 
-        # Base64 Conversions
-        base64.ascii) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); print(base64.b64decode(b + '=' * (4 - len(b) % 4)).decode(errors='ignore'), end='')" 2>/dev/null ;;
-        base64.hex) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); print(base64.b64decode(b + '=' * (4 - len(b) % 4)).hex(), end='')" 2>/dev/null ;;
-        base64.bin) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); d = base64.b64decode(b + '=' * (4 - len(b) % 4)); print(''.join(format(x, '08b') for x in d), end='')" 2>/dev/null ;;
-        base64.dec) 
-            echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); d = base64.b64decode(b + '=' * (4 - len(b) % 4)); print(' '.join(str(x) for x in d), end='')" 2>/dev/null
-            ;;
-        base64.oct) 
-            echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); d = base64.b64decode(b + '=' * (4 - len(b) % 4)); print(' '.join(format(x, '03o') for x in d), end='')" 2>/dev/null
-            ;;
-        base64.base32) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); d = base64.b64decode(b + '=' * (4 - len(b) % 4)); print(base64.b32encode(d).decode(), end='')" 2>/dev/null ;;
-        base64.unicode) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); d = base64.b64decode(b + '=' * (4 - len(b) % 4)); print(' '.join([f'U+{x:04X}' for x in d]), end='')" 2>/dev/null ;;
-        base64.url) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); d = base64.b64decode(b + '=' * (4 - len(b) % 4)); print(''.join(['%' + format(x, '02x') for x in d]), end='')" 2>/dev/null ;;
-        base64.base64) echo -n "$input" | base64 | tr -d '\n' ;;
-        
-        # URL Conversions
-        url.ascii) printf "%b" "$cleaned" ;;
-        url.hex) printf "%b" "$cleaned" | xxd -p ;;
-        url.bin) printf "%b" "$cleaned" | xxd -b -c 256 | sed 's/^.*: //; s/  .*//' | tr -d ' \n' ;;
-        url.dec) 
-            hexs=$(printf "%b" "$cleaned" | xxd -p | sed 's/../& /g')
-            for hex in $hexs; do printf "%d " "0x$hex"; done | sed 's/ $//' 
-            ;;
-        url.oct) 
-            hexs=$(printf "%b" "$cleaned" | xxd -p | sed 's/../& /g')
-            for hex in $hexs; do printf "%03o " "0x$hex"; done | sed 's/ $//' 
-            ;;
-        url.base32) printf "%b" "$cleaned" | base32 ;;
-        url.base64) printf "%b" "$cleaned" | base64 ;;
-        url.unicode) printf "%b" "$cleaned" | ascii_to_unicode ;;
-        url.url) echo "$input" ;;
-        
-        # Unicode Conversions
+        oct.ascii) oct_to_ascii "$cleaned" ;;
+        oct.dec) oct_to_dec "$cleaned" ;;
+        oct.hex) local d=$(oct_to_dec "$cleaned"); dec_to_hex "$d" ;;
+        oct.bin) local d=$(oct_to_dec "$cleaned"); dec_to_bin "$d" ;;
+
+        unipoint.ascii) dec_to_ascii "$cleaned" ;;
+        unipoint.dec) echo "$cleaned" ;;
+        unipoint.hex) dec_to_hex "$cleaned" ;;
+        unipoint.oct) dec_to_oct "$cleaned" ;;
+        unipoint.bin) dec_to_bin "$cleaned" ;;
+
         unicode.ascii) unicode_to_ascii "$cleaned" ;;
-        unicode.hex) unicode_to_ascii "$cleaned" | ascii_to_hex ;;
-        unicode.bin) unicode_to_ascii "$cleaned" | ascii_to_bin ;;
-        unicode.dec) unicode_to_ascii "$cleaned" | ascii_to_dec ;;
-        unicode.oct) unicode_to_ascii "$cleaned" | ascii_to_oct ;;
-        unicode.base32) unicode_to_ascii "$cleaned" | base32 ;;
-        unicode.base64) unicode_to_ascii "$cleaned" | base64 ;;
-        unicode.url) unicode_to_ascii "$cleaned" | xxd -p | sed 's/../%&/g' ;;
-        # Rotation Conversions (Generic)
+        unicode.dec) local a=$(unicode_to_ascii "$cleaned"); ascii_to_dec "$a" ;;
+        unicode.hex) local a=$(unicode_to_ascii "$cleaned"); ascii_to_hex "$a" ;;
+        unicode.unipoint) local a=$(unicode_to_ascii "$cleaned"); ascii_to_dec "$a" ;;
+
+        # Encoders
+        *.utf8) local a=$(perform_conversion "$input" "$from" "ascii"); echo -n "$a" | text_to_encoded_hex "utf-8" ;;
+        *.utf16be) local a=$(perform_conversion "$input" "$from" "ascii"); echo -n "$a" | text_to_encoded_hex "utf-16be" ;;
+        *.utf16le) local a=$(perform_conversion "$input" "$from" "ascii"); echo -n "$a" | text_to_encoded_hex "utf-16le" ;;
+        *.utf32be) local a=$(perform_conversion "$input" "$from" "ascii"); echo -n "$a" | text_to_encoded_hex "utf-32be" ;;
+        *.utf32le) local a=$(perform_conversion "$input" "$from" "ascii"); echo -n "$a" | text_to_encoded_hex "utf-32le" ;;
+        *.url) local a=$(perform_conversion "$input" "$from" "ascii"); python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read()), end='')" <<< "$a" ;;
+
+        # Transfer (Base/URL)
+        base32.ascii) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); print(base64.b32decode(b + '=' * (8 - len(b) % 8), casefold=True).decode(errors='ignore'), end='')" 2>/dev/null ;;
+        base64.ascii) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); print(base64.b64decode(b + '=' * (4 - len(b) % 4)).decode(errors='ignore'), end='')" 2>/dev/null ;;
+        url.ascii) python3 -c "import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read()), end='')" <<< "$cleaned" ;;
+
+        # Bulk/Decoder
+        *.decoder) perform_conversion "$input" "$from" "ascii" ;;
+
+        # Ciphers
         *.rot)
             for i in $(seq 0 25); do
                 printf "ROT-%02d: %s\n" "$i" "$(perform_rot "$input" "$i")"
             done
             ;;
+        *.rot13) perform_rot "$input" 13 ;;
         *.rot[0-9]|*.rot1[0-9]|*.rot2[0-5])
             shift_val=$(echo "$to" | sed 's/rot//')
             perform_rot "$input" "$shift_val"
             ;;
-        
-        # Universal Decoder Mapping
-        ascii.decoder) echo "$input" ;;
-        hex.decoder) hex_to_ascii "$cleaned" ;;
-        bin.decoder) bin_to_ascii "$cleaned" ;;
-        dec.decoder) dec_to_ascii "$cleaned" ;;
-        oct.decoder) oct_to_ascii "$cleaned" ;;
-        base32.decoder) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); print(base64.b32decode(b + '=' * (8 - len(b) % 8), casefold=True).decode(errors='ignore'), end='')" 2>/dev/null ;;
-        base64.decoder) echo "$cleaned" | python3 -c "import sys, base64; b = sys.stdin.read().strip(); print(base64.b64decode(b + '=' * (4 - len(b) % 4)).decode(errors='ignore'), end='')" 2>/dev/null ;;
-        url.decoder) printf "%b" "$cleaned" ;;
-        unicode.decoder) unicode_to_ascii "$cleaned" ;;
-        utf8.decoder) encoded_hex_to_text "utf-8" "$cleaned" ;;
-        utf16.decoder) encoded_hex_to_text "utf-16" "$cleaned" ;;
-        utf32.decoder) encoded_hex_to_text "utf-32" "$cleaned" ;;
-        rot[0-9].decoder|rot1[0-9].decoder|rot2[0-5].decoder|rot13.decoder)
-            # For ROT, decode is the inverse shift. For ROT13 it's symmetric.
-            # We'll just use a generic 'decode to common readable' approach if possible, 
-            # but for now we'll just treat it as the inverse shift (which for rot13 is rot13).
-            if [[ "$from" == "rot13" ]]; then
-                echo "$input" | tr 'A-Za-z' 'N-ZA-Mn-za-m'
-            else
-                shift_val=$(echo "$from" | sed 's/rot//')
-                inv_shift=$(( 26 - shift_val ))
-                perform_rot "$input" "$inv_shift"
-            fi
-            ;;
-        
-        rot13.ascii) echo "$input" | tr 'A-Za-z' 'N-ZA-Mn-za-m' ;;
-        rot13.rot13) echo -n "$input" | tr 'A-Za-z' 'N-ZA-Mn-za-m' | tr 'A-Za-z' 'N-ZA-Mn-za-m' ;;
-        
-        rot13.decoder) echo "$input" | tr 'A-Za-z' 'N-ZA-Mn-za-m' ;;
-        ascii.md5) hash_string "$input" "md5" ;;
-        ascii.sha1) hash_string "$input" "sha1" ;;
-        ascii.sha256) hash_string "$input" "sha256" ;;
-        ascii.sha384) hash_string "$input" "sha384" ;;
-        ascii.sha512) hash_string "$input" "sha512" ;;
-        ascii.crc32) hash_string "$input" "crc32" ;;
 
-        # Hashes (from Hex Interpretation)
-        hex.md5) hash_hex "$cleaned" "md5" ;;
-        hex.sha1) hash_hex "$cleaned" "sha1" ;;
-        hex.sha256) hash_hex "$cleaned" "sha256" ;;
-        hex.sha384) hash_hex "$cleaned" "sha384" ;;
-        hex.sha512) hash_hex "$cleaned" "sha512" ;;
-        hex.crc32) hash_hex "$cleaned" "crc32" ;;
-        
+        # Hashes
+        *.md5|*.sha1|*.sha256|*.sha384|*.sha512|*.crc32)
+            algo=$(echo "$to" | sed 's/.*\.\(.*\)/\1/')
+            hash_string "$(perform_conversion "$input" "$from" "ascii")" "$algo"
+            ;;
+
         *) 
             # PIVOT LOGIC: If explicit conversion not defined, try pivoting through ASCII
-            # Condition: From != ascii AND To != ascii
             if [ "$from" != "ascii" ] && [ "$to" != "ascii" ]; then
-                # 1. Convert From -> Ascii
-                local ascii_temp
-                { ascii_temp=$(perform_conversion "$input" "$from" "ascii"); } 2>/dev/null
-                if [ $? -eq 0 ] && [ -n "$ascii_temp" ]; then
-                     # 2. Convert Ascii -> To
-                     perform_conversion "$ascii_temp" "ascii" "$to"
-                     return $?
-                fi
+                local a=$(perform_conversion "$input" "$from" "ascii")
+                [ -n "$a" ] && perform_conversion "$a" "ascii" "$to" && return 0
             fi
             return 1 
             ;;
@@ -775,13 +628,14 @@ show_help() {
     echo -e "  ${WHITE}Space-Sep:${NC}    '72 101 108' is treated as a sequence of ASCII bytes (H e l)."
     echo ""
     echo -e "${CYAN}Formats:${NC}"
-    printf "  ${YELLOW}%-12s${NC} %s\n" "Section 1:"   "hex, bin, dec, oct, ascii, unicode, utf8/16/32"
+    printf "  ${YELLOW}%-12s${NC} %s\n" "Section 1:"   "hex, bin, dec, oct, ascii, unipoint, utf8/16/32"
     printf "  ${YELLOW}%-12s${NC} %s\n" "Section 2:"   "base64, base32, url, rot1-25"
     printf "  ${YELLOW}%-12s${NC} %s\n" "Section 3:"   "md5, sha1, sha256, sha512, crc32"
     echo ""
     echo -e "${CYAN}Examples:${NC}"
     echo "  $0 \"SGVsbG8=\" all            (Detect B64 and show all sections)"
     echo "  $0 \"SGVsbG8=\" b64 decoder     (Extract 'Hello' from Base64)"
+    echo "  $0 \"Eyasu\" unipoint           (Show Unicode code points for name)"
     echo "  $0 \"U+0041\" al               (Detect Unicode and show Section 1)"
     echo "  $0 \"41 42 43\" hex al          (Treat as multi-byte ASCII: A B C)"
     echo "  $0 \"123456\" dec al            (Treat as single large numeric value)"
