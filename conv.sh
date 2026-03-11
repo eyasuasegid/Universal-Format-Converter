@@ -38,11 +38,18 @@ normalize_format() {
         oct|octal|o) echo "oct" ;;
         base32|b32) echo "base32" ;;
         base64|b64) echo "base64" ;;
+        base45|b45) echo "base45" ;;
+        base58|b58) echo "base58" ;;
+        base62|b62) echo "base62" ;;
+        base85|b85) echo "base85" ;;
+        base91|b91) echo "base91" ;;
+        base) echo "base" ;;
         url|percent) echo "url" ;;
         unicode|uni|u) echo "unicode" ;;
         unipoint|up) echo "unipoint" ;;
         rot) echo "rot" ;;
         rot13) echo "rot13" ;;
+        rot47) echo "rot47" ;;
         rot[0-9]|rot1[0-9]|rot2[0-5]) echo "$1" ;;
         decoder|decode) echo "decoder" ;;
         utf8|utf-8) echo "utf8" ;;
@@ -145,7 +152,7 @@ print_section_2() {
     fi
 
     printf "${PURPLE}│${NC}  ${YELLOW}[ENCODE / NAME]${NC}\n"
-    for fmt in base64 base32 url; do
+    for fmt in base64 base32 base45 base58 base62 base85 base91 url; do
          if [ "$fmt" == "$from" ]; then 
             # Re-encode as per user instruction "encode is its name"
             { res=$(perform_conversion "$input" "$from" "$fmt"); } 2>/dev/null
@@ -154,13 +161,19 @@ print_section_2() {
             { res=$(perform_conversion "$input" "ascii" "$fmt"); } 2>/dev/null
             label="$fmt"
          fi
-         printf "${PURPLE}│${NC}  ${CYAN}▸ %-15s${NC} : ${GREEN}%s${NC}\n" "$label" "$res"
+         if [ -n "$res" ]; then printf "${PURPLE}│${NC}  ${CYAN}▸ %-15s${NC} : ${GREEN}%s${NC}\n" "$label" "$res"; fi
     done
     
     # ROT Section
     printf "${NC}${PURPLE}│${NC}\n"
     printf "${PURPLE}│${NC}  ${YELLOW}[ROTATION CIPHERS]${NC}\n"
     
+    # ROT47
+    { res47=$(perform_rot47 "$input"); } 2>/dev/null
+    label47="rot47"
+    if [ "$from" == "rot47" ]; then label47="rot47 (Source)"; fi
+    printf "${PURPLE}│${NC}  ${CYAN}▸ %-15s${NC} : ${GREEN}%s${NC}\n" "$label47" "$res47"
+
     # User Request: Use the original input for rotation, not the decoded one.
     # Also, if no letters, just print itself (once).
     if [[ ! "$input" =~ [A-Za-z] ]]; then
@@ -200,6 +213,11 @@ perform_rot() {
     local shifted_upper="${upper:shift}${upper:0:shift}"
     local shifted_lower="${lower:shift}${lower:0:shift}"
     echo "$input" | tr "${upper}${lower}" "${shifted_upper}${shifted_lower}"
+}
+
+# ROT47 Helper (Printable ASCII 33-126)
+perform_rot47() {
+    echo "$1" | tr '\!-~' 'P-~\!-O'
 }
 
 # Function to clean input
@@ -577,6 +595,157 @@ try:
 except: pass
 " <<< "$cleaned" 2>/dev/null ;;
 
+        *.base45|ascii.base45) 
+            python3 -c "
+import sys
+def encode_b45(data):
+    charset = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:'
+    res = []
+    for i in range(0, len(data), 2):
+        if i + 1 < len(data):
+            v = data[i] + (data[i+1] << 8)
+            res.append(charset[v % 45])
+            res.append(charset[(v // 45) % 45])
+            res.append(charset[v // (45 * 45)])
+        else:
+            v = data[i]
+            res.append(charset[v % 45])
+            res.append(charset[v // 45])
+    return ''.join(res)
+print(encode_b45(sys.stdin.buffer.read()), end='')" <<< "$input" 2>/dev/null ;;
+
+        base45.ascii)
+            python3 -c "
+import sys
+def decode_b45(s):
+    charset = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:'
+    base = {c: i for i, c in enumerate(charset)}
+    res = bytearray()
+    for i in range(0, len(s), 3):
+        if i + 2 < len(s):
+            v = base[s[i]] + base[s[i+1]] * 45 + base[s[i+2]] * 45 * 45
+            res.append(v & 0xff)
+            res.append(v >> 8)
+        elif i + 1 < len(s):
+            v = base[s[i]] + base[s[i+1]] * 45
+            res.append(v)
+    return res
+print(decode_b45(sys.stdin.read().strip()).decode(errors='ignore'), end='')" <<< "$input" 2>/dev/null ;;
+
+        *.base58|ascii.base58)
+            python3 -c "
+import sys
+def b58encode(v):
+    alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+    n = int.from_bytes(v, 'big')
+    res = ''
+    while n > 0:
+        n, r = divmod(n, 58)
+        res = alphabet[r] + res
+    pad = 0
+    for b in v:
+        if b == 0: pad += 1
+        else: break
+    return '1' * pad + res
+print(b58encode(sys.stdin.buffer.read()), end='')" <<< "$input" 2>/dev/null ;;
+
+        base58.ascii)
+            python3 -c "
+import sys
+alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+def b58decode(v):
+    n = 0
+    for char in v:
+        n = n * 58 + alphabet.index(char)
+    return n.to_bytes((n.bit_length() + 7) // 8, 'big')
+print(b58decode(sys.stdin.read().strip()).decode(errors='ignore'), end='')" <<< "$input" 2>/dev/null ;;
+
+       *.base62|ascii.base62)
+            python3 -c "
+import sys
+def b62encode(v):
+    alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+    n = int.from_bytes(v, 'big')
+    if n == 0: return alphabet[0]
+    res = ''
+    while n > 0:
+        n, r = divmod(n, 62)
+        res = alphabet[r] + res
+    return res
+print(b62encode(sys.stdin.buffer.read()), end='')" <<< "$input" 2>/dev/null ;;
+
+       base62.ascii)
+            python3 -c "
+import sys
+alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+def b62decode(v):
+    n = 0
+    for char in v:
+        n = n * 62 + alphabet.index(char)
+    return n.to_bytes((n.bit_length() + 7) // 8, 'big')
+print(b62decode(sys.stdin.read().strip()).decode(errors='ignore'), end='')" <<< "$input" 2>/dev/null ;;
+
+       *.base85|ascii.base85)
+             python3 -c "import sys, base64; print(base64.b85encode(sys.stdin.buffer.read()).decode(), end='')" <<< "$input" 2>/dev/null ;;
+
+       base85.ascii)
+             python3 -c "import sys, base64; print(base64.b85decode(sys.stdin.read().strip()).decode(errors='ignore'), end='')" <<< "$input" 2>/dev/null ;;
+
+       *.base91|ascii.base91)
+            python3 -c '
+import sys
+def b91encode(data):
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$%&()*+,./:;<=>?@[]^_`{|}~\""
+    b = n = 0
+    out = ""
+    for byte in data:
+        n |= byte << b
+        b += 8
+        if b > 13:
+            v = n & 8191
+            if v > 88:
+                n >>= 13
+                b -= 13
+            else:
+                v = n & 16383
+                n >>= 14
+                b -= 14
+            out += alphabet[v % 91] + alphabet[v // 91]
+    if b:
+        out += alphabet[n % 91]
+        if b > 7 or n > 90: out += alphabet[n // 91]
+    return out
+print(b91encode(sys.stdin.buffer.read()), end="")' <<< "$input" 2>/dev/null ;;
+
+       base91.ascii)
+            python3 -c '
+import sys
+def b91decode(data):
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$%&()*+,./:;<=>?@[]^_`{|}~\""
+    mapping = {c: i for i, c in enumerate(alphabet)}
+    v = -1
+    b = n = 0
+    out = bytearray()
+    for char in data:
+        if char not in mapping: continue
+        c = mapping[char]
+        if v < 0:
+            v = c
+        else:
+            v += c * 91
+            n |= v << b
+            b += 13 if (v & 8191) > 88 else 14
+            while True:
+                out.append(n & 255)
+                n >>= 8
+                b -= 8
+                if not b > 7: break
+            v = -1
+    if v + 1:
+        out.append((n | v << b) & 255)
+    return out
+print(b91decode(sys.stdin.read().strip()).decode(errors="ignore"), end="")' <<< "$input" 2>/dev/null ;;
+
         # Bulk/Decoder
         *.decoder) perform_conversion "$input" "$from" "ascii" ;;
 
@@ -585,11 +754,20 @@ except: pass
             for i in $(seq 0 25); do
                 printf "ROT-%02d: %s\n" "$i" "$(perform_rot "$input" "$i")"
             done
+            printf "ROT-47: %s\n" "$(perform_rot47 "$input")"
             ;;
         *.rot13) perform_rot "$input" 13 ;;
+        *.rot47) perform_rot47 "$input" ;;
         *.rot[0-9]|*.rot1[0-9]|*.rot2[0-5])
             shift_val=$(echo "$to" | sed 's/rot//')
             perform_rot "$input" "$shift_val"
+            ;;
+
+        *.base)
+            for b in base64 base32 base45 base58 base62 base85 base91; do
+                res=$(perform_conversion "$input" "$from" "$b")
+                printf "BASE-%-2s: %s\n" "${b#base}" "$res"
+            done
             ;;
 
         # Hashes
@@ -626,43 +804,59 @@ convert() {
         local src_id=$(get_section_id "$from")
         local src_name=$(get_section_name "$src_id")
 
-        print_section_header "$from" "$input" "$(echo "$to" | tr '[:lower:]' '[:upper:]')" "$src_name"
+        local report=""
+        report=$(print_section_header "$from" "$input" "$(echo "$to" | tr '[:lower:]' '[:upper:]')" "$src_name")
+        report+="\n"
         
         if [ "$to" == "all" ]; then
-            print_section_1 "$input" "$from"
-            echo ""
-            print_section_2 "$input" "$from"
-            echo ""
-            print_section_3 "$input" "$from"
+            report+=$(print_section_1 "$input" "$from")
+            report+="\n\n"
+            report+=$(print_section_2 "$input" "$from")
+            report+="\n\n"
+            report+=$(print_section_3 "$input" "$from")
         else
-            # Only current category
             case "$src_id" in
-                1) print_section_1 "$input" "$from" ;;
-                2) print_section_2 "$input" "$from" ;;
-                3) print_section_3 "$input" "$from" ;;
+                1) report+=$(print_section_1 "$input" "$from") ;;
+                2) report+=$(print_section_2 "$input" "$from") ;;
+                3) report+=$(print_section_3 "$input" "$from") ;;
             esac
         fi
         
+        echo -e "$report"
+
+        if [ -n "$OUTPUT_FILE" ]; then
+            echo -e "$report" | sed 's/\x1b\[[0-9;]*m//g' > "$OUTPUT_FILE"
+            echo -e "${YELLOW}Report saved to: $OUTPUT_FILE${NC}"
+        fi
         return 0
     fi
 
     # Handle Standard/Single Conversion
-    if [[ "$to" =~ ^(ascii|unicode|utf8|utf16|utf32|hex|bin|dec|oct|md5|sha1|sha256|sha384|sha512|crc32|decoder|base64|base32|url|rot.*)$ ]]; then
+    if [[ "$to" =~ ^(ascii|unicode|utf8|utf16|utf32|hex|bin|dec|oct|md5|sha1|sha256|sha384|sha512|crc32|decoder|base|base64|base32|base45|base58|base62|base85|base91|url|rot.*)$ ]]; then
         local result=$(perform_conversion "$input" "$from" "$to")
         if [ $? -eq 0 ]; then
             echo -e "${PURPLE}┌── Converting: ${CYAN}$from${NC} ${PURPLE}→${NC} ${CYAN}$to${NC} ${YELLOW}(Interpreted)${NC}"
             echo -e "${PURPLE}│${NC}  ${CYAN}Input  ${NC} : ${YELLOW}$input${NC}"
             echo -e "${PURPLE}└─${NC} ${CYAN}Output ${NC} : ${BOLD}${GREEN}$result${NC}"
+            
+            if [ -n "$OUTPUT_FILE" ]; then
+                echo -n "$result" > "$OUTPUT_FILE"
+                echo -e "\n${YELLOW}Result saved to: $OUTPUT_FILE${NC}"
+            fi
             return 0
         fi
     else
         # DIRECT (Treat input as literal string)
-        # We pivot through 'ascii' to use our standard transformation functions
         local result=$(perform_conversion "$input" "ascii" "$to")
         if [ $? -eq 0 ]; then
             echo -e "${PURPLE}┌── Converting: ${CYAN}$from${NC} ${PURPLE}→${NC} ${CYAN}$to${NC} ${YELLOW}(Direct)${NC}"
             echo -e "${PURPLE}│${NC}  ${CYAN}Input  ${NC} : ${YELLOW}$input${NC}"
             echo -e "${PURPLE}└─${NC} ${CYAN}Output ${NC} : ${BOLD}${GREEN}$result${NC}"
+
+            if [ -n "$OUTPUT_FILE" ]; then
+                echo -n "$result" > "$OUTPUT_FILE"
+                echo -e "\n${YELLOW}Result saved to: $OUTPUT_FILE${NC}"
+            fi
             return 0
         fi
     fi
@@ -697,6 +891,10 @@ show_banner() {
 show_help() {
     echo -e "${CYAN}Usage:${NC}"
     echo "  $0 <input>                   Auto-detect format & show category list (al)"
+    echo "  echo <data> | $0             Pipe data directly into auto-detection"
+    echo "  $0 -f <file>                 Read data from file & auto-detect"
+    echo "  $0 -o <file> <input>         Save result/report to file"
+    echo "  $0 -f <in> -o <out> <to>     Convert file to file"
     echo "  $0 <input> <from> <to>       Standard conversion (e.g., ascii to hex)"
     echo "  $0 <input> <from> all        Show EVERYTHING from all categories"
     echo "  $0 <input> <from> al         Show EVERYTHING from the source's category only"
@@ -713,7 +911,7 @@ show_help() {
     echo ""
     echo -e "${CYAN}Formats:${NC}"
     printf "  ${YELLOW}%-12s${NC} %s\n" "Section 1:"   "hex, bin, dec, oct, ascii, unipoint, utf8/16/32"
-    printf "  ${YELLOW}%-12s${NC} %s\n" "Section 2:"   "base64, base32, url, rot1-25"
+    printf "  ${YELLOW}%-12s${NC} %s\n" "Section 2:"   "base64/32/45/58/62/85/91, url, rot1-25, rot47"
     printf "  ${YELLOW}%-12s${NC} %s\n" "Section 3:"   "md5, sha1, sha256, sha512, crc32"
     echo ""
     echo -e "${CYAN}Examples:${NC}"
@@ -730,6 +928,37 @@ show_help() {
 # Main
 check_dependencies
 show_banner
+
+# Global Flags
+INPUT_FILE=""
+OUTPUT_FILE=""
+
+# Flag Parsing Loop
+while [[ "$1" =~ ^- ]]; do
+    case "$1" in
+        -f) INPUT_FILE="$2"; shift 2 ;;
+        -o) OUTPUT_FILE="$2"; shift 2 ;;
+        -h|--help) show_help; exit 0 ;;
+        *) break ;;
+    esac
+done
+
+# Handle Piped Input (If -f not specified)
+if [ -z "$INPUT_FILE" ] && [ ! -t 0 ]; then
+    INPUT_DATA=$(cat -)
+    if [ -n "$INPUT_DATA" ]; then
+        set -- "$INPUT_DATA" "$@"
+    fi
+elif [ -n "$INPUT_FILE" ]; then
+    if [ -f "$INPUT_FILE" ] || [ "$INPUT_FILE" == "/dev/stdin" ]; then
+        INPUT_DATA=$(cat "$INPUT_FILE")
+        set -- "$INPUT_DATA" "$@"
+    else
+        echo -e "${RED}Error: File '$INPUT_FILE' not found.${NC}"
+        exit 1
+    fi
+fi
+
 if [ $# -eq 0 ]; then
     show_help
     exit 0
@@ -809,6 +1038,10 @@ if [ $# -eq 2 ]; then
         echo -e "${CYAN}Hashing: '$input' ($detected) → $target${NC}"
         res=$(hash_string "$input" "$target")
         echo -e "${GREEN}Output: $res${NC}"
+        if [ -n "$OUTPUT_FILE" ]; then
+            echo -n "$res" > "$OUTPUT_FILE"
+            echo -e "${YELLOW}Hash saved to: $OUTPUT_FILE${NC}"
+        fi
         echo ""
         exit 0
     fi
