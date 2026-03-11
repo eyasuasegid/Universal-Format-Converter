@@ -14,9 +14,13 @@
 - **🔍 Intelligent Auto-Detection**: Simply provide data, and PRISM automatically identifies the format (Hex, Base64, Binary, URL, etc.).
 - **📂 Categorized Logical Layers**: Data organized into Number Systems, Transfers, and Hashes.
 - **⚡ Universal Token-Aware Logic**: Space-separated tokens are processed individually across ALL sections.
+- **📄 Advanced Input/Output**: 
+    - **`-f`**: Read data directly from files.
+    - **`-o`**: Save raw results or "clean" text reports directly to disk.
+    - **`|`**: Full pipeline support—pipe data in and out seamlessly.
 - **🔄 Unicode-First Decoding**: Section 1 maps numerical inputs directly to Unicode characters.
 - **🛡️ Dual-Endian Support**: Full support for BE and LE in UTF-16 and UTF-32 encodings.
-- **🛡️ Multi-ROT Spectrum**: Brute-force all 25 rotation shifts automatically.
+- **🛡️ Multi-ROT/Base Spectrum**: Brute-force all rotation shifts or base encodings automatically using the `rot` and `base` universal targets.
 
 ---
 
@@ -26,7 +30,7 @@ PRISM is a portable, single-file Bash script.
 
 ```bash
 # Clone the repository
-git clone https://github.com/eyasuasegid/prism.git
+git clone https://github.com/yourusername/prism.git
 cd prism
 
 # Make it executable
@@ -53,11 +57,13 @@ Requires a Linux environment with:
 | **`all`** | Generates a full spectrum report across ALL three categories. |
 | **`al`** | Generates a focused report for the relevant category. |
 | **`decoder`** | A universal target that extracts plaintext from any encoding. |
+| **`base`** | Displays a full spectrum of all supported base encodings. |
+| **`rot`** | Brute-forces all ROT1-25 shifts AND includes ROT47. |
 
-### 2. The Logic Rule
-PRISM employs two distinct transformation strategies, both of which are **Token-Aware**:
-- **Interpreted Strategy (Section 1)**: Maps numerical tokens (Hex, Dec, etc.) to **Unicode code-points**. Resulting Binary and Hex values are space-separated for maximum readability.
-- **Literal Strategy (Sections 2 & 3)**: Encodings (Base64/URL) and Hashes (MD5/SHA) are performed on the **literal tokens** you provided. If you provide multiple space-separated strings, each is processed independently.
+### 2. Flags & Pipeline
+- **File Input**: `./conv.sh -f payload.txt all`
+- **Output Redirection**: `./conv.sh -o result.txt "Hello" hex`
+- **Piping**: `echo "SGVsbG8=" | ./conv.sh decoder`
 
 ---
 
@@ -71,8 +77,9 @@ Converts between mathematical and character representations.
 
 ### Section 2: Encode & Decode (Transfers)
 Handles data obfuscation and transfer encodings of the **literal tokens**.
-*   *Base64, Base32, URL-Encoded, ROT1-25 Spectrum.*
-*   **Batch Processing**: Provide multiple encoded blobs separated by spaces to decode them all at once.
+*   *Base64, Base32, Base45, Base58, Base62, Base85, Base91*
+*   *URL-Encoded, ROT1-25 Spectrum, ROT47.*
+*   **Universal Tools**: Use `base` or `rot` to see all variations at once.
 
 ### Section 3: Cryptographic Hashes
 Generates integrity checks for each **literal token** provided.
@@ -82,28 +89,34 @@ Generates integrity checks for each **literal token** provided.
 
 ## 📖 Examples
 
-### Unicode-First Decoding
+### Universal Base Comparison
 ```bash
-./conv.sh "7069 636f" hex al
-# Reveals the Unicode string "灩捯" with space-separated numerical values.
+./conv.sh "Secret" base
+# Shows Base64, Base32, Base58, Base91, etc., in a single categorized view.
 ```
 
-### Batch Base64 Decoding
+### ROT47 Decoding
 ```bash
-./conv.sh "SGVsbG8= d29ybGQ=" b64 decoder
-# Returns: Hello world
+./conv.sh "s2E2`abP" rot47
+# Returns: Data123!
 ```
 
-### Multiple Token Hashing
+### Chained Pipeline Processing
 ```bash
-./conv.sh "admin pass" ascii md5
-# Returns MD5s for "admin" and "pass" separated by spaces.
+echo "Hello" | ./conv.sh ascii b64 | ./conv.sh b64 decoder
+# Returns: Hello
 ```
 
-### Endianess Comparison
+### File-to-File Hashing
 ```bash
-./conv.sh "A" al
-# Shows "0041" (BE) and "4100" (LE) for UTF-16.
+./conv.sh -f payload.bin -o checksum.sha256 sha256
+# Reads payload.bin and saves the SHA256 result directly to checksum.sha256.
+```
+
+### Full Analysis Report to Disk
+```bash
+./conv.sh -o analysis.txt "SGVsbG8=" all
+# Saves a complete, color-stripped text report of "SGVsbG8=" to analysis.txt.
 ```
 
 ---
